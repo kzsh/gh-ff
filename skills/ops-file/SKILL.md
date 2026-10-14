@@ -1,6 +1,6 @@
 ---
 name: gh-ff
-description: Format reference for gh-ff YAML files that describe GitHub operations (PR reviews, comments, issues, any gh CLI call). Use when asked to prepare GitHub operations as a file: write the file per this reference and hand it to the user, who reviews and executes it with gh-ff.
+description: "Format reference for gh-ff YAML files that describe GitHub operations (PR reviews, comments, issues, any gh CLI call). Use when asked to prepare GitHub operations as a file: write the file per this reference and hand it to the user, who reviews and executes it with gh-ff."
 ---
 
 # gh-ff file formats
