@@ -182,6 +182,11 @@ func submitNew(d *spec.Doc, f *opsfile.File, path string) error {
 		return fmt.Errorf("review submitted, but could not parse its id from the response; ids not written to %s", path)
 	}
 
+	// Record the review id before fetching comment ids: if the fetch fails,
+	// a rerun of submit must update this review instead of creating another.
+	if err := spec.WriteIDs(path, created.ID, nil); err != nil {
+		return fmt.Errorf("review %d submitted, but writing its id to %s failed: %w", created.ID, path, err)
+	}
 	if err := syncIDs(d.Review, path, created.ID); err != nil {
 		return fmt.Errorf("review %d submitted, but %w; recover with: gh-ff sync %s %d", created.ID, err, path, created.ID)
 	}
@@ -194,22 +199,21 @@ func submitNew(d *spec.Doc, f *opsfile.File, path string) error {
 func syncIDs(r *spec.Review, path string, reviewID int64) error {
 	var ids []int64
 	if len(r.Comments) > 0 {
-		listArgv := []string{
-			"api",
-			fmt.Sprintf("repos/%s/pulls/%d/reviews/%d/comments", r.RepoPath(), r.PR, reviewID),
-			"-F", "per_page=100",
+		listOp := r.ListCommentsOp(reviewID)
+		listArgv, err := listOp.Argv()
+		if err != nil {
+			return err
 		}
 		// The listing can 404 briefly right after creation (read-after-write
 		// lag), so retry with backoff before giving up.
 		var listOut []byte
-		var err error
 		for attempt := 0; ; attempt++ {
 			listOut, err = ghCapture(listArgv)
 			if err == nil {
 				break
 			}
 			if attempt == 3 {
-				return fmt.Errorf("fetching comment ids failed after %d attempts: %w", attempt+1, err)
+				return fmt.Errorf("fetching comment ids (gh %s) failed after %d attempts: %w", shellJoin(listArgv), attempt+1, err)
 			}
 			time.Sleep(time.Duration(1<<attempt) * time.Second)
 		}
@@ -235,13 +239,14 @@ func discoverReview(r *spec.Review) (int64, error) {
 		return 0, fmt.Errorf("resolving current user: %w", err)
 	}
 	login := strings.TrimSpace(string(loginOut))
-	out, err := ghCapture([]string{
-		"api",
-		fmt.Sprintf("repos/%s/pulls/%d/reviews", r.RepoPath(), r.PR),
-		"-F", "per_page=100",
-	})
+	listOp := r.ListReviewsOp()
+	listArgv, err := listOp.Argv()
 	if err != nil {
-		return 0, fmt.Errorf("listing reviews: %w", err)
+		return 0, err
+	}
+	out, err := ghCapture(listArgv)
+	if err != nil {
+		return 0, fmt.Errorf("listing reviews (gh %s): %w", shellJoin(listArgv), err)
 	}
 	var reviews []struct {
 		ID   int64  `json:"id"`
@@ -271,6 +276,8 @@ func discoverReview(r *spec.Review) (int64, error) {
 }
 
 // ghCapture runs gh with stdout captured (stderr and stdin pass through).
+// On failure the captured stdout goes to stderr: gh api writes the HTTP
+// error body (message, errors[]) to stdout and only a status line to stderr.
 func ghCapture(argv []string) ([]byte, error) {
 	cmd := exec.Command("gh", argv...)
 	var buf bytes.Buffer
@@ -278,6 +285,9 @@ func ghCapture(argv []string) ([]byte, error) {
 	cmd.Stdout = &buf
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
+	if err != nil {
+		os.Stderr.Write(buf.Bytes())
+	}
 	return buf.Bytes(), err
 }
 

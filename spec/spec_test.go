@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gh-from-file/opsfile"
 )
 
 func load(t *testing.T, content string) *Doc {
@@ -169,5 +171,19 @@ review:
 `)
 	if _, err := d.Compile(); err == nil {
 		t.Error("want error for comment id without review id, got nil")
+	}
+}
+
+// gh api switches to POST when given -F without a method; the listings
+// then 404.
+func TestListOpsAreReads(t *testing.T) {
+	r := &Review{PR: 4, Repo: "o/r"}
+	for name, op := range map[string]opsfile.Op{
+		"comments": r.ListCommentsOp(555),
+		"reviews":  r.ListReviewsOp(),
+	} {
+		if reason := op.MutationReason(); reason != "" {
+			t.Errorf("%s: %s", name, reason)
+		}
 	}
 }

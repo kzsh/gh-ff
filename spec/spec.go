@@ -176,7 +176,7 @@ func (r *Review) compileUpdate() ([]opsfile.Op, error) {
 	}
 	for i, c := range r.Comments {
 		if c.ID == 0 {
-			return nil, fmt.Errorf("review: comments[%d] has no id: updating review %d cannot create comments; remove the comment or submit it in a new review", i, r.ID)
+			return nil, fmt.Errorf("review: comments[%d] has no id: updating review %d cannot create comments; if it was submitted with the review, recover its id with gh-ff sync; otherwise remove it or submit it in a new review", i, r.ID)
 		}
 		body := strings.TrimSpace(c.Body)
 		if body == "" {
@@ -193,4 +193,23 @@ func (r *Review) compileUpdate() ([]opsfile.Op, error) {
 		})
 	}
 	return ops, nil
+}
+
+// ListCommentsOp lists a review's comments, used to pair server ids with
+// file comments.
+func (r *Review) ListCommentsOp(reviewID int64) opsfile.Op {
+	return opsfile.Op{
+		Cmd:   "api",
+		Args:  []string{fmt.Sprintf("repos/%s/pulls/%d/reviews/%d/comments", r.RepoPath(), r.PR, reviewID)},
+		Flags: map[string]any{"method": "GET", "F": "per_page=100"},
+	}
+}
+
+// ListReviewsOp lists the PR's reviews.
+func (r *Review) ListReviewsOp() opsfile.Op {
+	return opsfile.Op{
+		Cmd:   "api",
+		Args:  []string{fmt.Sprintf("repos/%s/pulls/%d/reviews", r.RepoPath(), r.PR)},
+		Flags: map[string]any{"method": "GET", "F": "per_page=100"},
+	}
 }
