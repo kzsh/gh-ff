@@ -22,14 +22,22 @@ Full format reference, including validation rules:
 ## Usage
 
 ```
-gh-ff run [-n] <ops.yaml>       execute an ops file
-gh-ff submit [-n] <spec.yaml>   compile a spec and execute it
+gh-ff run [-n] [--read-only] <ops.yaml>     execute an ops file
+gh-ff submit [-n] [--read-only] <spec.yaml> compile a spec and execute it
 gh-ff compile <spec.yaml>       print the compiled ops YAML
 gh-ff template <review|ops>     print a starter file
 gh-ff sync <spec.yaml> [id]     recover server ids for a submitted review
 ```
 
 `-n`/`--dry-run` prints the `gh` commands without executing.
+
+`--read-only` audits every compiled command before the first one runs and
+aborts, naming the offenders, if any would mutate. The audit is static and
+fails closed: `gh api` is judged by its HTTP method (explicit `-X`/`--method`,
+or the POST that `gh` implies when a body flag is present), `gh api graphql`
+by whether its query document is a mutation, and every other `gh` command by
+its trailing verb against a read-only list (`view`, `list`, `diff`, `checks`,
+`status`, `search`, `browse`). Unrecognized commands count as mutations.
 
 After `submit`, gh-ff writes the server-assigned review and comment ids
 back into the spec file. Resubmitting a file with ids updates bodies in

@@ -28,6 +28,7 @@ const usage = `usage:
       in the file or given
 
   -n, --dry-run   print the gh commands without executing them
+      --read-only abort unless every command is read-only
 `
 
 func main() {
@@ -48,6 +49,7 @@ func run(args []string) error {
 		fs := flag.NewFlagSet(sub, flag.ContinueOnError)
 		dryRun := fs.Bool("dry-run", false, "print commands without executing")
 		fs.BoolVar(dryRun, "n", *dryRun, "alias for --dry-run")
+		readOnly := fs.Bool("read-only", false, "abort unless every command is read-only")
 		if err := fs.Parse(rest); err != nil {
 			return err
 		}
@@ -60,6 +62,11 @@ func run(args []string) error {
 			if err != nil {
 				return err
 			}
+			if *readOnly {
+				if err := f.AuditReadOnly(); err != nil {
+					return err
+				}
+			}
 			return execute(f, *dryRun)
 		}
 		d, err := spec.Load(fs.Arg(0))
@@ -69,6 +76,11 @@ func run(args []string) error {
 		f, err := d.Compile()
 		if err != nil {
 			return err
+		}
+		if *readOnly {
+			if err := f.AuditReadOnly(); err != nil {
+				return err
+			}
 		}
 		// Update mode (id present) and dry runs need no write-back.
 		if *dryRun || d.Review.ID != 0 {
