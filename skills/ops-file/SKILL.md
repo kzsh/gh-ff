@@ -53,7 +53,8 @@ Validation (the file is rejected before anything runs):
 - `pr`: required, integer > 0
 - `event`: optional; exactly `approve`, `request_changes`, or `comment`
   (case-insensitive); omitted leaves the review pending
-- a non-empty `summary` or at least one comment is required
+- a non-empty `summary` or at least one comment is required, except with
+  `event: approve`
 - each comment: `file`, `line` (integer > 0), and non-empty `body`
   required; `start_line` and `side` are optional and unvalidated locally
   (GitHub rejects `start_line` >= `line` and `side` outside LEFT/RIGHT)

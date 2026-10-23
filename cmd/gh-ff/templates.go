@@ -8,7 +8,7 @@ review:
   pr: 1                      # required: pull request number, > 0
   # repo: owner/name         # optional: defaults to the repo of the current directory
   # event: comment           # optional: approve | request_changes | comment; omit = pending review
-  summary: |                 # a summary or at least one comment is required
+  summary: |                 # a summary or a comment is required, except to approve
     Overall feedback, markdown.
   comments:
     - file: path/in/repo.go  # required: file must appear in the PR diff

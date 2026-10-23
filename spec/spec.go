@@ -101,8 +101,10 @@ func (r *Review) compile() ([]opsfile.Op, error) {
 	if r.PR <= 0 {
 		return nil, fmt.Errorf("review: missing or invalid pr number")
 	}
-	if strings.TrimSpace(r.Summary) == "" && len(r.Comments) == 0 {
-		return nil, fmt.Errorf("review: needs a summary or at least one comment")
+	// GitHub accepts a bodiless APPROVE; other events and pending reviews
+	// need a body.
+	if strings.TrimSpace(r.Summary) == "" && len(r.Comments) == 0 && !strings.EqualFold(r.Event, "approve") {
+		return nil, fmt.Errorf("review: needs a summary or at least one comment unless event is approve")
 	}
 	if r.ID != 0 {
 		return r.compileUpdate()
