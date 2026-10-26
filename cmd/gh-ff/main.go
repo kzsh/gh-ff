@@ -324,6 +324,9 @@ func execute(f *opsfile.File, dryRun bool) error {
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		// gh pages TTY stdout through $GH_PAGER/$PAGER (often less); force
+		// pass-through so a multi-op run never blocks on a pager.
+		cmd.Env = append(os.Environ(), "GH_PAGER=cat")
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("ops[%d] (gh %s): %w", i, shellJoin(argv), err)
 		}
