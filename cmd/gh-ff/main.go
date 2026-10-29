@@ -17,6 +17,14 @@ import (
 	"gh-from-file/spec"
 )
 
+// Stamped by scripts/build.sh through -ldflags -X. A plain `go build` or
+// `go install` leaves version at "dev" and commit and date empty.
+var (
+	version = "dev"
+	commit  = ""
+	date    = ""
+)
+
 const usage = `usage:
   gh-ff run [-n] <ops.yaml>       execute a layer-1 ops file
   gh-ff compile <spec.yaml>       lower a layer-2 spec to ops YAML (stdout)
@@ -26,6 +34,7 @@ const usage = `usage:
       fetch server ids for an already-submitted review and write them into
       the file; discovers the review by author and summary when no id is
       in the file or given
+  gh-ff --version                 print the version
 
   -n, --dry-run   print the gh commands without executing them
       --read-only abort unless every command is read-only
@@ -38,6 +47,17 @@ func main() {
 	}
 }
 
+// Single line, so install.sh can read it whole.
+func versionString() string {
+	if commit == "" {
+		return "gh-ff " + version
+	}
+	if date == "" {
+		return "gh-ff " + version + " (" + commit + ")"
+	}
+	return "gh-ff " + version + " (" + commit + ", " + date + ")"
+}
+
 func run(args []string) error {
 	if len(args) < 1 {
 		fmt.Fprint(os.Stderr, usage)
@@ -45,6 +65,9 @@ func run(args []string) error {
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
+	case "version", "--version", "-v":
+		fmt.Println(versionString())
+		return nil
 	case "run", "submit":
 		fs := flag.NewFlagSet(sub, flag.ContinueOnError)
 		dryRun := fs.Bool("dry-run", false, "print commands without executing")
