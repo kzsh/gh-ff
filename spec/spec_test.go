@@ -110,13 +110,32 @@ func TestCompileBodilessApproval(t *testing.T) {
 	}
 }
 
+// Bodiless REQUEST_CHANGES takes the two-step route: create-review rejects
+// it in one request.
+func TestCompileBodilessRequestChanges(t *testing.T) {
+	f, err := load(t, "review:\n  pr: 7\n  event: request_changes\n").Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Ops) != 2 {
+		t.Fatalf("want create and publish, got %d ops", len(f.Ops))
+	}
+	var create, pub reviewPayload
+	for i, p := range []*reviewPayload{&create, &pub} {
+		if err := json.Unmarshal([]byte(f.Ops[i].Flags["input"].(map[string]any)["content"].(string)), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if create.Event != "" || pub.Event != "REQUEST_CHANGES" || pub.Body != "" {
+		t.Errorf("create %+v, publish %+v", create, pub)
+	}
+}
+
 func TestCompileRejects(t *testing.T) {
 	for name, content := range map[string]string{
 		"bad event":    "review:\n  pr: 1\n  summary: x\n  event: nope\n",
 		"no pr":        "review:\n  summary: x\n",
-		"empty review":              "review:\n  pr: 1\n",
-		"bodiless request_changes":  "review:\n  pr: 1\n  event: request_changes\n",
-		"bodiless comment event":    "review:\n  pr: 1\n  event: comment\n",
+		"empty review": "review:\n  pr: 1\n",
 		"bad comment":  "review:\n  pr: 1\n  comments:\n    - file: a.go\n",
 	} {
 		if _, err := load(t, content).Compile(); err == nil {

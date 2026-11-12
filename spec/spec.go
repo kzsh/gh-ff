@@ -103,10 +103,8 @@ func (r *Review) compile() ([]opsfile.Op, error) {
 	if r.PR <= 0 {
 		return nil, fmt.Errorf("review: missing or invalid pr number")
 	}
-	// GitHub accepts a bodiless APPROVE; other events and pending reviews
-	// need a body.
-	if !r.HasContent() && !strings.EqualFold(r.Event, "approve") {
-		return nil, fmt.Errorf("review: needs a summary or at least one comment unless event is approve")
+	if !r.hasContent() && r.Event == "" {
+		return nil, fmt.Errorf("review: needs a summary, a comment, or an event")
 	}
 	event, err := r.apiEvent()
 	if err != nil {
@@ -133,7 +131,7 @@ func (r *Review) compile() ([]opsfile.Op, error) {
 			Body:      strings.TrimSpace(c.Body),
 		})
 	}
-	if !r.HasContent() {
+	if r.SingleStep() {
 		p.Event = event
 		op, err := r.createOp(p)
 		return []opsfile.Op{op}, err
@@ -155,14 +153,20 @@ func (r *Review) compile() ([]opsfile.Op, error) {
 	return ops, nil
 }
 
-// HasContent reports whether the review carries a summary or comments.
-// Reviews with content are created in two steps: as a pending review,
-// whose id gh-ff records along with its comment ids, then published with
-// the event. Every id is in the file before the review is visible, and
-// GitHub's one-pending-review-per-user limit makes a repeated create fail
-// instead of duplicating. A bodiless approval is one request: it has no
-// content to duplicate.
-func (r *Review) HasContent() bool {
+// SingleStep reports whether the review is created in one request: only a
+// bodiless approval, which has no content to duplicate. Every other review
+// is created in two steps: as a pending review, whose id gh-ff records
+// along with its comment ids, then published with the event. Every id is
+// in the file before the review is visible, and GitHub's
+// one-pending-review-per-user limit makes a repeated create fail instead
+// of duplicating. The two-step route also allows bodiless REQUEST_CHANGES
+// and COMMENT: create-review requires a body for those events, but a
+// pending create has no event, and submit-review's body is optional.
+func (r *Review) SingleStep() bool {
+	return !r.hasContent() && strings.EqualFold(r.Event, "approve")
+}
+
+func (r *Review) hasContent() bool {
 	return strings.TrimSpace(r.Summary) != "" || len(r.Comments) > 0
 }
 
@@ -201,8 +205,9 @@ func (r *Review) PublishOp(id int64) (opsfile.Op, error) {
 	return r.publishOp(strconv.FormatInt(id, 10), event)
 }
 
-// publishOp resends the summary: GitHub requires a body when publishing
-// with REQUEST_CHANGES or COMMENT.
+// publishOp resends the summary, so the published body does not depend on
+// whether publishing without one keeps the pending review's body. An empty
+// summary is omitted.
 func (r *Review) publishOp(id, event string) (opsfile.Op, error) {
 	body, err := json.MarshalIndent(reviewPayload{Body: strings.TrimSpace(r.Summary), Event: event}, "", "  ")
 	if err != nil {

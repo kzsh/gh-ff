@@ -187,7 +187,7 @@ func loadFor(sub, path string) (*opsfile.File, error) {
 
 // submitNew creates a review and writes its ids into the spec file. A
 // review with content is created pending, its ids recorded, and only then
-// published (see spec.Review.HasContent), so a failure at any point leaves
+// published (see spec.Review.SingleStep), so a failure at any point leaves
 // the file able to resume instead of duplicating.
 func submitNew(r *spec.Review, f *opsfile.File, path string) error {
 	tmpDir, err := os.MkdirTemp("", "gh-ff-")
@@ -214,7 +214,7 @@ func submitNew(r *spec.Review, f *opsfile.File, path string) error {
 		}
 	}
 	if postErr != nil {
-		if !r.HasContent() {
+		if r.SingleStep() {
 			return fmt.Errorf("gh %s: %w", shellJoin(argv), postErr)
 		}
 		// The create may have landed with its response lost, or an earlier
@@ -233,7 +233,7 @@ func submitNew(r *spec.Review, f *opsfile.File, path string) error {
 	if err := spec.WriteIDs(path, created.ID, nil); err != nil {
 		return fmt.Errorf("review %d created, but writing its id to %s failed: %w; recover with: gh-ff sync %s %d", created.ID, path, err, path, created.ID)
 	}
-	if !r.HasContent() {
+	if r.SingleStep() {
 		fmt.Printf("review %d submitted; id written to %s\n", created.ID, path)
 		return nil
 	}

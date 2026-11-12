@@ -44,7 +44,8 @@ publish with the `event`. Every id is in the file before the review is
 visible. If the create fails or its response is lost, gh-ff adopts your
 pending review on the PR when its content matches the file; GitHub allows
 one pending review per user per PR, so a repeated create cannot
-duplicate. A bodiless approval is a single request.
+duplicate. A review with an `event` needs no summary; a bodiless approval
+with no comments is a single request.
 
 Resubmitting a file with ids updates bodies in place, then publishes the
 review if it is still pending.
