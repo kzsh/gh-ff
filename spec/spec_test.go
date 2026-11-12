@@ -45,8 +45,20 @@ review:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Ops) != 1 {
-		t.Fatalf("want 1 op, got %d", len(f.Ops))
+	// Two-step create: pending review, then publish with the event.
+	if len(f.Ops) != 2 {
+		t.Fatalf("want 2 ops, got %d", len(f.Ops))
+	}
+	if f.Ops[1].Args[0] != "repos/owner/repo/pulls/123/reviews/REVIEW_ID/events" {
+		t.Errorf("publish target: %v", f.Ops[1].Args)
+	}
+	pub := f.Ops[1].Flags["input"].(map[string]any)["content"].(string)
+	var pp reviewPayload
+	if err := json.Unmarshal([]byte(pub), &pp); err != nil {
+		t.Fatal(err)
+	}
+	if pp.Event != "REQUEST_CHANGES" || pp.Body != "Two blocking issues." {
+		t.Errorf("publish payload: %+v", pp)
 	}
 	op := f.Ops[0]
 	if op.Cmd != "api" || op.Args[0] != "repos/owner/repo/pulls/123/reviews" {
@@ -57,8 +69,8 @@ review:
 	if err := json.Unmarshal([]byte(content), &p); err != nil {
 		t.Fatal(err)
 	}
-	if p.Event != "REQUEST_CHANGES" || p.Body != "Two blocking issues." {
-		t.Errorf("payload header: %+v", p)
+	if p.Event != "" || p.Body != "Two blocking issues." {
+		t.Errorf("create payload must leave the review pending: %+v", p)
 	}
 	if len(p.Comments) != 2 || p.Comments[0].Path != "src/api.js" ||
 		p.Comments[1].StartLine != 12 || p.Comments[1].Side != "RIGHT" {

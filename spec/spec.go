@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -15,7 +16,8 @@ import (
 
 // Doc is a layer-2 document, discriminated by its single top-level key.
 type Doc struct {
-	Review *Review `yaml:"review"`
+	Review    *Review    `yaml:"review"`
+	Reference *Reference `yaml:"reference,omitempty"`
 }
 
 type Review struct {
@@ -103,8 +105,12 @@ func (r *Review) compile() ([]opsfile.Op, error) {
 	}
 	// GitHub accepts a bodiless APPROVE; other events and pending reviews
 	// need a body.
-	if strings.TrimSpace(r.Summary) == "" && len(r.Comments) == 0 && !strings.EqualFold(r.Event, "approve") {
+	if !r.HasContent() && !strings.EqualFold(r.Event, "approve") {
 		return nil, fmt.Errorf("review: needs a summary or at least one comment unless event is approve")
+	}
+	event, err := r.apiEvent()
+	if err != nil {
+		return nil, err
 	}
 	if r.ID != 0 {
 		return r.compileUpdate()
@@ -115,13 +121,6 @@ func (r *Review) compile() ([]opsfile.Op, error) {
 		}
 	}
 	p := reviewPayload{Body: strings.TrimSpace(r.Summary)}
-	if r.Event != "" {
-		ev, ok := events[strings.ToLower(r.Event)]
-		if !ok {
-			return nil, fmt.Errorf("review: event %q (want approve, request_changes, or comment)", r.Event)
-		}
-		p.Event = ev
-	}
 	for i, c := range r.Comments {
 		if c.File == "" || c.Line <= 0 || strings.TrimSpace(c.Body) == "" {
 			return nil, fmt.Errorf("review: comments[%d]: file, line, and body are required", i)
@@ -134,26 +133,105 @@ func (r *Review) compile() ([]opsfile.Op, error) {
 			Body:      strings.TrimSpace(c.Body),
 		})
 	}
-
-	body, err := json.MarshalIndent(p, "", "  ")
+	if !r.HasContent() {
+		p.Event = event
+		op, err := r.createOp(p)
+		return []opsfile.Op{op}, err
+	}
+	create, err := r.createOp(p)
 	if err != nil {
 		return nil, err
 	}
-	return []opsfile.Op{{
+	ops := []opsfile.Op{create}
+	if event != "" {
+		// The review id is unknown until the create returns; submit
+		// substitutes it. Compiled output shows the placeholder.
+		publish, err := r.publishOp("REVIEW_ID", event)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, publish)
+	}
+	return ops, nil
+}
+
+// HasContent reports whether the review carries a summary or comments.
+// Reviews with content are created in two steps: as a pending review,
+// whose id gh-ff records along with its comment ids, then published with
+// the event. Every id is in the file before the review is visible, and
+// GitHub's one-pending-review-per-user limit makes a repeated create fail
+// instead of duplicating. A bodiless approval is one request: it has no
+// content to duplicate.
+func (r *Review) HasContent() bool {
+	return strings.TrimSpace(r.Summary) != "" || len(r.Comments) > 0
+}
+
+func (r *Review) apiEvent() (string, error) {
+	if r.Event == "" {
+		return "", nil
+	}
+	ev, ok := events[strings.ToLower(r.Event)]
+	if !ok {
+		return "", fmt.Errorf("review: event %q (want approve, request_changes, or comment)", r.Event)
+	}
+	return ev, nil
+}
+
+func (r *Review) createOp(p reviewPayload) (opsfile.Op, error) {
+	body, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return opsfile.Op{}, err
+	}
+	return opsfile.Op{
 		Cmd:  "api",
 		Args: []string{fmt.Sprintf("repos/%s/pulls/%d/reviews", r.RepoPath(), r.PR)},
 		Flags: map[string]any{
 			"method": "POST",
 			"input":  map[string]any{"content": string(body) + "\n"},
 		},
-	}}, nil
+	}, nil
+}
+
+// PublishOp submits pending review id with the file's event.
+func (r *Review) PublishOp(id int64) (opsfile.Op, error) {
+	event, err := r.apiEvent()
+	if err != nil {
+		return opsfile.Op{}, err
+	}
+	return r.publishOp(strconv.FormatInt(id, 10), event)
+}
+
+// publishOp resends the summary: GitHub requires a body when publishing
+// with REQUEST_CHANGES or COMMENT.
+func (r *Review) publishOp(id, event string) (opsfile.Op, error) {
+	body, err := json.MarshalIndent(reviewPayload{Body: strings.TrimSpace(r.Summary), Event: event}, "", "  ")
+	if err != nil {
+		return opsfile.Op{}, err
+	}
+	return opsfile.Op{
+		Cmd:  "api",
+		Args: []string{fmt.Sprintf("repos/%s/pulls/%d/reviews/%s/events", r.RepoPath(), r.PR, id)},
+		Flags: map[string]any{
+			"method": "POST",
+			"input":  map[string]any{"content": string(body) + "\n"},
+		},
+	}, nil
+}
+
+// GetReviewOp fetches one review, for its state.
+func (r *Review) GetReviewOp(id int64) opsfile.Op {
+	return opsfile.Op{
+		Cmd:   "api",
+		Args:  []string{fmt.Sprintf("repos/%s/pulls/%d/reviews/%d", r.RepoPath(), r.PR, id)},
+		Flags: map[string]any{"method": "GET"},
+	}
 }
 
 // compileUpdate lowers a review that was already submitted (id present).
 // GitHub permits updating only bodies: the review summary via PUT, each
-// comment via PATCH. The verdict (event) of a submitted review cannot be
-// changed and is ignored here. A comment without an id would require a
-// create, so it aborts the compile.
+// comment via PATCH. The verdict (event) of a published review cannot be
+// changed; submit publishes with it only if the review is still pending.
+// A comment without an id would require a create, so it aborts the compile.
 func (r *Review) compileUpdate() ([]opsfile.Op, error) {
 	var ops []opsfile.Op
 	jsonBody := func(text string) (map[string]any, error) {

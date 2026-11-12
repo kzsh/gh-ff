@@ -1,6 +1,6 @@
 // Package opsfile implements layer 1: a YAML file whose entries map
-// parameters onto gh CLI invocations. Any gh operation is expressible,
-// including arbitrary REST/GraphQL calls via the "api" subcommand.
+// parameters onto gh CLI invocations, including REST/GraphQL calls via
+// the "api" subcommand.
 package opsfile
 
 import (

@@ -15,13 +15,14 @@ Two formats, both self-contained YAML with markdown in block scalars:
 - **Spec** — task-shaped documents like `review`. Prefer this where a
   document type exists for the task.
 - **Ops** — direct mapping onto `gh` CLI invocations; `cmd: api` reaches
-  any REST or GraphQL endpoint, so every GitHub operation is expressible.
+  any REST or GraphQL endpoint.
   Use when no spec document type fits.
 
 ## Spec: review
 
-Describes a whole PR review — summary, verdict, and all inline comments —
-submitted as one atomic request:
+Describes a whole PR review — summary, verdict, and all inline comments.
+gh-ff creates it pending, records its ids in the file, then publishes it
+with the `event`:
 
 ```yaml
 review:
@@ -62,21 +63,72 @@ Validation (the file is rejected before anything runs):
 
 ### Resubmission: `id` fields
 
-After a successful submission, gh-ff writes the server-assigned ids back
-into the file: `id:` on the review and on each comment. A file carrying
-`review.id` updates the existing review on the next submission instead of
-creating a duplicate — never the reverse.
+On submission, gh-ff writes the server-assigned ids into the file
+before publishing: `id:` on the review and on each comment. A file
+carrying `review.id` updates the existing review on the next submission
+instead of creating a duplicate — never the reverse. If publishing
+failed, the review stays pending with its ids in the file, and the next
+submission publishes it.
 
 When editing a file that already has ids:
 
-- preserve every `id:` field; removing the review id causes a duplicate
-  review, removing a comment id is an error
-- only bodies are updatable: the summary and comment `body` text. The
-  verdict (`event`) of a submitted review cannot be changed and is
-  ignored; `file`/`line` anchors are fixed at creation
+- preserve every `id:` field; removing the review id while comments keep
+  theirs is an error, removing all ids creates a duplicate review, and
+  removing a comment id is an error
+- only bodies are updatable: the summary and comment `body` text.
+  `event` applies only while the review is pending; a published
+  review's verdict cannot be changed. `file`/`line` anchors are fixed at
+  creation
 - do not add new comments to a review with an id — the file is rejected
   (updates cannot create); put new comments in a new review file
 - never invent an id; a nonexistent id makes GitHub reject the update
+- deleting a comment from the file leaves it on GitHub untouched; an
+  empty `summary` leaves the submitted summary unchanged
+
+If a review was submitted but its ids are missing from the file, the user
+recovers them with `gh-ff sync <file> [review-id]`; without an id, sync
+finds the review by the authenticated user whose body equals `summary`.
+
+### Existing discussion: `reference`
+
+`gh-ff sync` also writes a top-level `reference` section beside
+`review`: the PR's existing reviews, inline threads, and conversation
+comments, from all authors including the user.
+
+```yaml
+reference:
+  reviews:              # verdicts and summaries
+    - id: 554
+      author: alice
+      state: CHANGES_REQUESTED
+      body: Needs tests.
+  threads:              # inline comments; root first, then replies
+    - file: src/api.js
+      line: 42
+      outdated: true    # anchor gone from the current diff; line is from the old one
+      comments:
+        - id: 901
+          author: me
+          body: This endpoint is unauthenticated.
+        - id: 950
+          author: alice
+          body: Fixed in a1b2c3.
+  conversation:         # top-level PR comments
+    - id: 1001
+      author: bob
+      body: LGTM once CI passes.
+```
+
+Read it for context: what others raised, how they replied to the user's
+comments, which points are already settled. Treat it as read-only:
+
+- never edit it; sync replaces the whole section, discarding edits
+- never copy its entries into `review.comments`; that would resubmit
+  someone else's comment as the user's, or fail on its foreign `id`
+- do not write a `reference` section yourself
+
+Review comments with no body and state `COMMENTED` are omitted from
+`reviews`; GitHub creates one per inline comment, already in `threads`.
 
 ## Ops format
 
@@ -112,6 +164,25 @@ Validation (the file is rejected before anything runs):
   `{content: <string>}` — any extra key is an error
 - flag names are not checked against gh; a misspelled flag fails at
   execution time, not load time
+
+## Checking a file
+
+These commands validate without touching GitHub; run them if gh-ff is
+available:
+
+- `gh-ff template <review|ops>` prints a valid starter file
+- `gh-ff compile <spec.yaml>` prints the ops a spec lowers to; for a
+  new review, the publish op carries a literal `REVIEW_ID` that submit
+  fills in, so the output is not runnable as an ops file
+- `gh-ff submit -n <spec.yaml>` and `gh-ff run -n <ops.yaml>` print the
+  `gh` commands without executing them
+
+The user may execute with `--read-only`, which aborts before the first
+command unless every command is read-only: `gh api` with `method` GET,
+HEAD, or OPTIONS, or with neither `method` nor a body flag (`f`, `F`,
+`field`, `raw-field`, `input`); a GraphQL query; or a gh verb in `view`, `list`,
+`diff`, `checks`, `status`, `search`, `browse`. Anything else counts as a
+mutation.
 
 ## Keep files self-contained
 

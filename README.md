@@ -1,9 +1,8 @@
 # gh-ff
 
-Execute GitHub operations from reviewable YAML files. An agent (or you)
-writes the file; you read it, then `gh-ff` runs it via the `gh` CLI. The
-idea is to have deterministic execution of the specified operations after 
-from review to execution. 
+Execute GitHub operations from YAML files. An agent (or you) writes the
+file; you read it, then `gh-ff` runs it via the `gh` CLI, executing only
+the operations the file states, in file order.
 
 ## Formats
 
@@ -14,7 +13,7 @@ Two layers, both self-contained YAML with markdown in block scalars:
   Executed in order, stops at first failure.
 - **Spec** (layer 2) — task-shaped documents compiled to ops. Currently
   one type: `review`, a whole PR review (summary, verdict, inline
-  comments) submitted as one atomic request.
+  comments), created pending, then published once its ids are recorded.
 
 Full format reference, including validation rules:
 [skills/ops-file/SKILL.md](skills/ops-file/SKILL.md).
@@ -39,9 +38,20 @@ by whether its query document is a mutation, and every other `gh` command by
 its trailing verb against a read-only list (`view`, `list`, `diff`, `checks`,
 `status`, `search`, `browse`). Unrecognized commands count as mutations.
 
-After `submit`, gh-ff writes the server-assigned review and comment ids
-back into the spec file. Resubmitting a file with ids updates bodies in
-place instead of creating a duplicate review.
+`submit` creates a review with content in two steps: a pending review,
+whose review and comment ids gh-ff writes into the spec file, then a
+publish with the `event`. Every id is in the file before the review is
+visible. If the create fails or its response is lost, gh-ff adopts your
+pending review on the PR when its content matches the file; GitHub allows
+one pending review per user per PR, so a repeated create cannot
+duplicate. A bodiless approval is a single request.
+
+Resubmitting a file with ids updates bodies in place, then publishes the
+review if it is still pending.
+
+`sync` also writes the PR's existing reviews, inline threads, and
+conversation comments into a top-level `reference` section. `submit`
+ignores it; each sync replaces it.
 
 ## Layout
 

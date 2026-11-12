@@ -40,6 +40,20 @@ func MatchCommentIDs(comments []Comment, submitted []SubmittedComment) ([]int64,
 	return ids, nil
 }
 
+// MatchPending checks that a pending review found on the server holds
+// exactly this file's content, so recovery after a lost create response
+// adopts it only if it is the review that create made.
+func MatchPending(r *Review, body string, submitted []SubmittedComment) error {
+	if normBody(body) != normBody(r.Summary) {
+		return fmt.Errorf("its summary differs from the file's")
+	}
+	if len(submitted) != len(r.Comments) {
+		return fmt.Errorf("it has %d comments, the file %d", len(submitted), len(r.Comments))
+	}
+	_, err := MatchCommentIDs(r.Comments, submitted)
+	return err
+}
+
 // WriteIDs inserts the submitted review id and per-comment ids into the
 // spec file in place. Edits the YAML AST rather than re-marshaling the
 // parsed document, so the user's comments and block scalars survive.
@@ -67,11 +81,14 @@ func WriteIDs(path string, reviewID int64, commentIDs []int64) error {
 			}
 		}
 	}
+	return writeNode(path, &doc)
+}
 
+func writeNode(path string, doc *yaml.Node) error {
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
+	if err := enc.Encode(doc); err != nil {
 		return err
 	}
 	if err := enc.Close(); err != nil {

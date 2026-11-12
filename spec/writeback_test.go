@@ -76,3 +76,18 @@ func TestMatchCommentIDs(t *testing.T) {
 		t.Error("want error for unmatched comment, got nil")
 	}
 }
+
+func TestMatchPending(t *testing.T) {
+	r := &Review{Summary: "Sum.\n", Comments: []Comment{{File: "a.go", Line: 1, Body: "x"}}}
+	same := []SubmittedComment{{ID: 1, Path: "a.go", Body: "x"}}
+	if err := MatchPending(r, "Sum.\r\n", same); err != nil {
+		t.Errorf("matching review rejected: %v", err)
+	}
+	extra := append(same, SubmittedComment{ID: 2, Path: "b.go", Body: "web ui draft"})
+	if MatchPending(r, "Sum.", extra) == nil {
+		t.Error("pending review with an extra comment adopted")
+	}
+	if MatchPending(r, "Other.", same) == nil {
+		t.Error("pending review with a different summary adopted")
+	}
+}

@@ -105,11 +105,16 @@ func run(args []string) error {
 				return err
 			}
 		}
-		// Update mode (id present) and dry runs need no write-back.
-		if *dryRun || d.Review.ID != 0 {
-			return execute(f, *dryRun)
+		if *dryRun {
+			return execute(f, true)
 		}
-		return submitNew(d, f, fs.Arg(0))
+		if d.Review.ID != 0 {
+			if err := execute(f, false); err != nil {
+				return err
+			}
+			return publishIfPending(d.Review, d.Review.ID)
+		}
+		return submitNew(d.Review, f, fs.Arg(0))
 	case "sync":
 		if len(rest) < 1 || len(rest) > 2 {
 			fmt.Fprint(os.Stderr, usage)
@@ -133,6 +138,10 @@ func run(args []string) error {
 			return err
 		}
 		fmt.Printf("ids for review %d written to %s\n", reviewID, rest[0])
+		if err := syncReference(d.Review, rest[0]); err != nil {
+			return err
+		}
+		fmt.Printf("pr %d comments written to %s under reference\n", d.Review.PR, rest[0])
 		return nil
 	case "template":
 		if len(rest) == 1 {
@@ -176,17 +185,18 @@ func loadFor(sub, path string) (*opsfile.File, error) {
 	return d.Compile()
 }
 
-// submitNew executes a create-mode review submission, then writes the
-// server-assigned review and comment ids back into the spec file so a
-// later submit updates instead of duplicating.
-func submitNew(d *spec.Doc, f *opsfile.File, path string) error {
+// submitNew creates a review and writes its ids into the spec file. A
+// review with content is created pending, its ids recorded, and only then
+// published (see spec.Review.HasContent), so a failure at any point leaves
+// the file able to resume instead of duplicating.
+func submitNew(r *spec.Review, f *opsfile.File, path string) error {
 	tmpDir, err := os.MkdirTemp("", "gh-ff-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(tmpDir)
 
-	op := f.Ops[0] // create mode compiles to exactly one POST
+	op := f.Ops[0]
 	if err := op.Materialize(tmpDir, "op0-"); err != nil {
 		return err
 	}
@@ -194,26 +204,148 @@ func submitNew(d *spec.Doc, f *opsfile.File, path string) error {
 	if err != nil {
 		return err
 	}
-	out, err := ghCapture(argv)
-	if err != nil {
-		return fmt.Errorf("gh %s: %w", shellJoin(argv), err)
-	}
+	out, postErr := ghCapture(argv)
 	var created struct {
 		ID int64 `json:"id"`
 	}
-	if err := json.Unmarshal(out, &created); err != nil || created.ID == 0 {
-		return fmt.Errorf("review submitted, but could not parse its id from the response; ids not written to %s", path)
+	if postErr == nil {
+		if err := json.Unmarshal(out, &created); err != nil || created.ID == 0 {
+			postErr = fmt.Errorf("could not parse the review id from the response")
+		}
+	}
+	if postErr != nil {
+		if !r.HasContent() {
+			return fmt.Errorf("gh %s: %w", shellJoin(argv), postErr)
+		}
+		// The create may have landed with its response lost, or an earlier
+		// run's pending review blocks this one; either way, adopt it.
+		fmt.Fprintf(os.Stderr, "gh-ff: creating the review failed (%v); looking for it on the server\n", postErr)
+		id, err := recoverPending(r)
+		if err != nil {
+			return fmt.Errorf("gh %s: %w; recovery: %w", shellJoin(argv), postErr, err)
+		}
+		created.ID = id
+		fmt.Printf("found pending review %d\n", id)
 	}
 
 	// Record the review id before fetching comment ids: if the fetch fails,
 	// a rerun of submit must update this review instead of creating another.
 	if err := spec.WriteIDs(path, created.ID, nil); err != nil {
-		return fmt.Errorf("review %d submitted, but writing its id to %s failed: %w", created.ID, path, err)
+		return fmt.Errorf("review %d created, but writing its id to %s failed: %w; recover with: gh-ff sync %s %d", created.ID, path, err, path, created.ID)
 	}
-	if err := syncIDs(d.Review, path, created.ID); err != nil {
-		return fmt.Errorf("review %d submitted, but %w; recover with: gh-ff sync %s %d", created.ID, err, path, created.ID)
+	if !r.HasContent() {
+		fmt.Printf("review %d submitted; id written to %s\n", created.ID, path)
+		return nil
+	}
+	if err := syncIDs(r, path, created.ID); err != nil {
+		return fmt.Errorf("review %d created pending, but %w; recover with: gh-ff sync %s %d", created.ID, err, path, created.ID)
+	}
+	if r.Event == "" {
+		fmt.Printf("review %d created pending; ids written to %s\n", created.ID, path)
+		return nil
+	}
+	if err := publish(r, created.ID); err != nil {
+		return fmt.Errorf("review %d created pending with ids in %s, but publishing failed: %w; rerun submit to publish", created.ID, path, err)
 	}
 	fmt.Printf("review %d submitted; ids written to %s\n", created.ID, path)
+	return nil
+}
+
+// recoverPending finds the authenticated user's pending review on the PR
+// and returns its id if its content matches the file. GitHub shows a user
+// only their own pending review and allows one per PR, so there is at most
+// one candidate.
+func recoverPending(r *spec.Review) (int64, error) {
+	login, err := currentLogin()
+	if err != nil {
+		return 0, err
+	}
+	listOp := r.ListReviewsOp()
+	listOp.Flags["paginate"] = nil
+	listArgv, err := listOp.Argv()
+	if err != nil {
+		return 0, err
+	}
+	var pending *spec.APIReview
+	// A review created a moment ago can be missing from the listing
+	// (read-after-write lag), so look a few times before concluding the
+	// create never landed.
+	for attempt := 0; pending == nil; attempt++ {
+		if attempt > 0 {
+			if attempt == 3 {
+				return 0, fmt.Errorf("no pending review by %s on pr %d", login, r.PR)
+			}
+			time.Sleep(time.Duration(1<<(attempt-1)) * time.Second)
+		}
+		out, err := ghCapture(listArgv)
+		if err != nil {
+			return 0, fmt.Errorf("listing reviews (gh %s): %w", shellJoin(listArgv), err)
+		}
+		reviews, err := spec.DecodePages[spec.APIReview](out)
+		if err != nil {
+			return 0, fmt.Errorf("review listing did not parse: %w", err)
+		}
+		for i, rv := range reviews {
+			if rv.State == "PENDING" && rv.User.Login == login {
+				pending = &reviews[i]
+			}
+		}
+	}
+	submitted, err := fetchReviewComments(r, pending.ID)
+	if err != nil {
+		return 0, err
+	}
+	if err := spec.MatchPending(r, pending.Body, submitted); err != nil {
+		return 0, fmt.Errorf("your pending review %d on pr %d does not match this file (%w); submit or delete it on GitHub, or adopt it with gh-ff sync <file> %d", pending.ID, r.PR, err, pending.ID)
+	}
+	return pending.ID, nil
+}
+
+// publishIfPending publishes review id with the file's event if it is
+// still pending; a published review's verdict cannot change.
+func publishIfPending(r *spec.Review, id int64) error {
+	if r.Event == "" {
+		return nil
+	}
+	op := r.GetReviewOp(id)
+	argv, err := op.Argv()
+	if err != nil {
+		return err
+	}
+	out, err := ghCapture(append(argv, "--jq", ".state"))
+	if err != nil {
+		return fmt.Errorf("checking review %d state (gh %s): %w", id, shellJoin(argv), err)
+	}
+	if strings.TrimSpace(string(out)) != "PENDING" {
+		return nil
+	}
+	if err := publish(r, id); err != nil {
+		return err
+	}
+	fmt.Printf("review %d published\n", id)
+	return nil
+}
+
+func publish(r *spec.Review, id int64) error {
+	op, err := r.PublishOp(id)
+	if err != nil {
+		return err
+	}
+	tmpDir, err := os.MkdirTemp("", "gh-ff-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+	if err := op.Materialize(tmpDir, "publish-"); err != nil {
+		return err
+	}
+	argv, err := op.Argv()
+	if err != nil {
+		return err
+	}
+	if _, err := ghCapture(argv); err != nil {
+		return fmt.Errorf("gh %s: %w", shellJoin(argv), err)
+	}
 	return nil
 }
 
@@ -222,27 +354,9 @@ func submitNew(d *spec.Doc, f *opsfile.File, path string) error {
 func syncIDs(r *spec.Review, path string, reviewID int64) error {
 	var ids []int64
 	if len(r.Comments) > 0 {
-		listOp := r.ListCommentsOp(reviewID)
-		listArgv, err := listOp.Argv()
+		submitted, err := fetchReviewComments(r, reviewID)
 		if err != nil {
 			return err
-		}
-		// The listing can 404 briefly right after creation (read-after-write
-		// lag), so retry with backoff before giving up.
-		var listOut []byte
-		for attempt := 0; ; attempt++ {
-			listOut, err = ghCapture(listArgv)
-			if err == nil {
-				break
-			}
-			if attempt == 3 {
-				return fmt.Errorf("fetching comment ids (gh %s) failed after %d attempts: %w", shellJoin(listArgv), attempt+1, err)
-			}
-			time.Sleep(time.Duration(1<<attempt) * time.Second)
-		}
-		var submitted []spec.SubmittedComment
-		if err := json.Unmarshal(listOut, &submitted); err != nil {
-			return fmt.Errorf("comment listing did not parse: %w", err)
 		}
 		if ids, err = spec.MatchCommentIDs(r.Comments, submitted); err != nil {
 			return err
@@ -254,14 +368,91 @@ func syncIDs(r *spec.Review, path string, reviewID int64) error {
 	return nil
 }
 
+func fetchReviewComments(r *spec.Review, reviewID int64) ([]spec.SubmittedComment, error) {
+	listOp := r.ListCommentsOp(reviewID)
+	listOp.Flags["paginate"] = nil
+	listArgv, err := listOp.Argv()
+	if err != nil {
+		return nil, err
+	}
+	// The listing can 404 briefly right after creation (read-after-write
+	// lag), so retry with backoff before giving up.
+	var listOut []byte
+	for attempt := 0; ; attempt++ {
+		listOut, err = ghCapture(listArgv)
+		if err == nil {
+			break
+		}
+		if attempt == 3 {
+			return nil, fmt.Errorf("fetching comment ids (gh %s) failed after %d attempts: %w", shellJoin(listArgv), attempt+1, err)
+		}
+		time.Sleep(time.Duration(1<<attempt) * time.Second)
+	}
+	submitted, err := spec.DecodePages[spec.SubmittedComment](listOut)
+	if err != nil {
+		return nil, fmt.Errorf("comment listing did not parse: %w", err)
+	}
+	return submitted, nil
+}
+
+func currentLogin() (string, error) {
+	out, err := ghCapture([]string{"api", "user", "--jq", ".login"})
+	if err != nil {
+		return "", fmt.Errorf("resolving current user: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// syncReference fetches the PR's reviews, inline threads, and conversation
+// and writes them to the file's reference section.
+func syncReference(r *spec.Review, path string) error {
+	fetch := func(op opsfile.Op) ([]byte, error) {
+		op.Flags["paginate"] = nil
+		argv, err := op.Argv()
+		if err != nil {
+			return nil, err
+		}
+		out, err := ghCapture(argv)
+		if err != nil {
+			return nil, fmt.Errorf("gh %s: %w", shellJoin(argv), err)
+		}
+		return out, nil
+	}
+	out, err := fetch(r.ListReviewsOp())
+	if err != nil {
+		return err
+	}
+	reviews, err := spec.DecodePages[spec.APIReview](out)
+	if err != nil {
+		return fmt.Errorf("review listing did not parse: %w", err)
+	}
+	if out, err = fetch(r.ListPRCommentsOp()); err != nil {
+		return err
+	}
+	comments, err := spec.DecodePages[spec.APIReviewComment](out)
+	if err != nil {
+		return fmt.Errorf("review comment listing did not parse: %w", err)
+	}
+	if out, err = fetch(r.ListIssueCommentsOp()); err != nil {
+		return err
+	}
+	issue, err := spec.DecodePages[spec.APIIssueComment](out)
+	if err != nil {
+		return fmt.Errorf("issue comment listing did not parse: %w", err)
+	}
+	if err := spec.WriteReference(path, spec.BuildReference(reviews, comments, issue)); err != nil {
+		return fmt.Errorf("writing reference failed: %w", err)
+	}
+	return nil
+}
+
 // discoverReview finds the submitted review matching the spec: authored by
 // the authenticated user with a body equal to the spec's summary.
 func discoverReview(r *spec.Review) (int64, error) {
-	loginOut, err := ghCapture([]string{"api", "user", "--jq", ".login"})
+	login, err := currentLogin()
 	if err != nil {
-		return 0, fmt.Errorf("resolving current user: %w", err)
+		return 0, err
 	}
-	login := strings.TrimSpace(string(loginOut))
 	listOp := r.ListReviewsOp()
 	listArgv, err := listOp.Argv()
 	if err != nil {
