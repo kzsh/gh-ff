@@ -13,6 +13,6 @@ test:
 dist:
     ./scripts/build.sh
 
-# Uploads dist/ as the release for HEAD's tag.
+# Uploads dist/ as a release: HEAD's tag, or next from the dev branch.
 publish:
     ./scripts/publish.sh
