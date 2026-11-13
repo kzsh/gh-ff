@@ -26,6 +26,9 @@ type Review struct {
 	ID   int64  `yaml:"id,omitempty"`
 	PR   int    `yaml:"pr"`
 	Repo string `yaml:"repo,omitempty"` // owner/name; defaults to the current repo
+	// Draft keeps the review pending: it cannot set an event, since
+	// publishing is what an event asks for.
+	Draft bool `yaml:"draft,omitempty"`
 	// Event: approve | request_changes | comment (case-insensitive).
 	// Empty leaves the review pending.
 	Event    string    `yaml:"event,omitempty"`
@@ -103,8 +106,16 @@ func (r *Review) compile() ([]opsfile.Op, error) {
 	if r.PR <= 0 {
 		return nil, fmt.Errorf("review: missing or invalid pr number")
 	}
-	if !r.hasContent() && r.Event == "" {
-		return nil, fmt.Errorf("review: needs a summary, a comment, or an event")
+	if r.Draft && r.Event != "" {
+		return nil, fmt.Errorf("review: draft cannot set event %q: drop draft to publish", r.Event)
+	}
+	if !r.hasContent() {
+		if r.Draft {
+			return nil, fmt.Errorf("review: draft needs a summary or a comment")
+		}
+		if r.Event == "" {
+			return nil, fmt.Errorf("review: needs a summary, a comment, or an event")
+		}
 	}
 	event, err := r.apiEvent()
 	if err != nil {

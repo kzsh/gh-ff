@@ -29,6 +29,7 @@ review:
   pr: 123
   repo: owner/repo        # optional; defaults to the current repo
   event: request_changes  # approve | request_changes | comment; omit to leave pending
+  draft: true             # optional: hold the review pending; forbids event
   summary: |
     Two blocking issues, details inline.
   comments:
@@ -54,6 +55,8 @@ Validation (the file is rejected before anything runs):
 - `pr`: required, integer > 0
 - `event`: optional; exactly `approve`, `request_changes`, or `comment`
   (case-insensitive); omitted leaves the review pending
+- `draft`: optional; `true` holds the review pending, needs a `summary` or
+  a comment, and cannot combine with `event` — the file picks one
 - a non-empty `summary`, at least one comment, or an `event` is required;
   every event may be submitted without a summary
 - each comment: `file`, `line` (integer > 0), and non-empty `body`
@@ -68,7 +71,8 @@ before publishing: `id:` on the review and on each comment. A file
 carrying `review.id` updates the existing review on the next submission
 instead of creating a duplicate — never the reverse. If publishing
 failed, the review stays pending with its ids in the file, and the next
-submission publishes it.
+submission publishes it; `draft` submits a file with ids without
+publishing it.
 
 When editing a file that already has ids:
 

@@ -47,8 +47,11 @@ one pending review per user per PR, so a repeated create cannot
 duplicate. A review with an `event` needs no summary; a bodiless approval
 with no comments is a single request.
 
+`draft: true` submits the same way and stops before publishing: the review
+stays pending with its ids in the file, and cannot also set an `event`.
+
 Resubmitting a file with ids updates bodies in place, then publishes the
-review if it is still pending.
+review if it is still pending; `draft` skips the publish.
 
 `sync` also writes the PR's existing reviews, inline threads, and
 conversation comments into a top-level `reference` section. `submit`

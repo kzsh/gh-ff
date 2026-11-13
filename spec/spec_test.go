@@ -94,6 +94,17 @@ review:
 	}
 }
 
+func TestCompileDraftWithIDUpdates(t *testing.T) {
+	d := load(t, "review:\n  id: 555\n  pr: 7\n  draft: true\n  summary: x\n")
+	f, err := d.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Ops) != 1 || f.Ops[0].Flags["method"] != "PUT" {
+		t.Fatalf("want only the summary update, got %d ops: %+v", len(f.Ops), f.Ops)
+	}
+}
+
 func TestCompileBodilessApproval(t *testing.T) {
 	d := load(t, "review:\n  pr: 7\n  event: approve\n")
 	f, err := d.Compile()
@@ -131,12 +142,32 @@ func TestCompileBodilessRequestChanges(t *testing.T) {
 	}
 }
 
+// A draft stops after the create: no publish op, whatever its content.
+func TestCompileDraftStaysPending(t *testing.T) {
+	f, err := load(t, "review:\n  pr: 7\n  draft: true\n  summary: x\n").Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Ops) != 1 {
+		t.Fatalf("want only the create, got %d ops", len(f.Ops))
+	}
+	var p reviewPayload
+	if err := json.Unmarshal([]byte(f.Ops[0].Flags["input"].(map[string]any)["content"].(string)), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Event != "" {
+		t.Errorf("pending create cannot set an event: %+v", p)
+	}
+}
+
 func TestCompileRejects(t *testing.T) {
 	for name, content := range map[string]string{
 		"bad event":    "review:\n  pr: 1\n  summary: x\n  event: nope\n",
 		"no pr":        "review:\n  summary: x\n",
 		"empty review": "review:\n  pr: 1\n",
 		"bad comment":  "review:\n  pr: 1\n  comments:\n    - file: a.go\n",
+		"draft event":  "review:\n  pr: 1\n  draft: true\n  event: comment\n",
+		"draft, empty": "review:\n  pr: 1\n  draft: true\n",
 	} {
 		if _, err := load(t, content).Compile(); err == nil {
 			t.Errorf("%s: want error, got nil", name)
