@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 #
-# Cross-compile the release targets into dist/ as gh-ff-<goos>-<goarch>.
+# Cross-compile the release targets into dist/ as gh-ff-<goos>-<goarch>, after
+# emptying it (see clean.sh): a release carries only the artifacts of the
+# commit it was cut from.
 #
 # gh-ff is pure Go — stdlib plus gopkg.in/yaml.v3, no cgo — so every platform
 # comes off one host with GOOS/GOARCH and no Docker or remote builder.
@@ -8,7 +10,7 @@
 # exists to produce: one artifact per OS/arch serves both.
 #
 # publish.sh uploads whatever dist/ holds, so build every target you mean to
-# release before publishing it.
+# release in one run, before publishing it.
 #
 # Requirements: the Go version named in go.mod, and git for the version
 # stamp. The version is the tag on HEAD (see publish.sh); anywhere else it is
@@ -80,6 +82,7 @@ COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 DATE="$(git show -s --format=%cI HEAD 2>/dev/null || echo unknown)"
 LDFLAGS="-s -w -X main.version=$VERSION -X main.commit=$COMMIT -X main.date=$DATE"
 
+DIST="$DIST" ./scripts/clean.sh
 mkdir -p "$DIST"
 echo "version: $VERSION ($COMMIT)"
 

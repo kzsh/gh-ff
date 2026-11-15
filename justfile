@@ -9,6 +9,10 @@ install:
 test:
     go test ./...
 
+# Empties dist/; build.sh runs this itself.
+clean:
+    ./scripts/clean.sh
+
 # Release targets into dist/; tag HEAD first so the stamp is the tag.
 dist:
     ./scripts/build.sh
